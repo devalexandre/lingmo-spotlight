@@ -1,7 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=Spotlight
+Name[pt_BR]=Spotlight
 Comment=Search apps, files and settings (Meta+Space)
+Comment[pt_BR]=Pesquise aplicativos, arquivos e configurações (Meta+Espaço)
 Exec=lingmo-spotlight --background
 Icon=system-search
 OnlyShowIn=Lingmo;
