@@ -26,6 +26,8 @@
 
 #include <KService>
 
+#include "contentsearch.h"
+#include "currencyrates.h"
 #include "resultsmodel.h"
 
 class SearchEngine : public QObject
@@ -50,9 +52,12 @@ Q_SIGNALS:
 private:
     void reloadApps();
     void search();
+    void rebuild();
+    QList<SearchResult> instantResults(const QString &text);
     void startFileSearch(const QString &query, quint64 generation);
 
     QList<SearchResult> calculator(const QString &q) const;
+    QList<SearchResult> conversions(const QString &q);
     QList<SearchResult> apps(const QString &q) const;
     QList<SearchResult> settings(const QString &q) const;
 
@@ -61,8 +66,15 @@ private:
     QList<KService::Ptr> m_apps;
     QSettings m_usage;
 
-    // Results shown for the current query, files are appended when they arrive
+    // Results shown for the current query: the instant ones, then files and
+    // file contents as they arrive, then "Search the web"
     QList<SearchResult> m_current;
+    QList<SearchResult> m_files;
+    QList<SearchResult> m_contents;
+    QList<SearchResult> m_web;
+    bool m_searchContents = false;
+    CurrencyRates m_rates;
+    ContentSearch m_contentSearch;
     quint64 m_generation = 0;
     QFutureWatcher<QList<SearchResult>> m_fileWatcher;
     QTimer m_fileDebounce;

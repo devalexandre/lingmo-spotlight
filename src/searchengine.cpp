@@ -38,6 +38,8 @@
 #include <KIO/ApplicationLauncherJob>
 #include <KSycoca>
 
+#include "converter.h"
+
 #include <cmath>
 
 namespace {
@@ -46,6 +48,7 @@ constexpr int MaxApps = 6;
 constexpr int MaxFiles = 8;
 constexpr int MaxFileDepth = 5;
 constexpr int MaxVisitedEntries = 40000;
+constexpr int MinContentQuery = 3;
 
 // Lingmo Settings pages: module id, title, icon, extra search words (en + pt)
 // Titles are translated at display time (context "SettingsPage")
@@ -162,6 +165,8 @@ SearchEngine::SearchEngine(QObject *parent)
     m_fileDebounce.setInterval(180);
     connect(&m_fileDebounce, &QTimer::timeout, this, [this] {
         startFileSearch(fold(m_query.trimmed()), m_generation);
+        if (m_searchContents)
+            m_contentSearch.start(m_query.trimmed());
     });
     connect(&m_fileWatcher, &QFutureWatcher<QList<SearchResult>>::finished, this, [this] {
         if (m_fileWatcher.property("generation").toULongLong() != m_generation) {
@@ -171,16 +176,21 @@ SearchEngine::SearchEngine(QObject *parent)
                 startFileSearch(q, m_generation);
             return;
         }
-        const QList<SearchResult> files = m_fileWatcher.result();
-        if (files.isEmpty())
+        m_files = m_fileWatcher.result();
+        rebuild();
+    });
+    connect(&m_contentSearch, &ContentSearch::finished, this, [this](const QString &query, const QList<SearchResult> &results) {
+        if (query != m_query.trimmed())
             return;
-        // Keep "Search the web" last
-        const bool hasWeb = !m_current.isEmpty() && m_current.last().kind == SearchResult::Web;
-        const SearchResult web = hasWeb ? m_current.takeLast() : SearchResult{};
-        m_current.append(files);
-        if (hasWeb)
-            m_current.append(web);
-        m_model.setResults(m_current);
+        m_contents = results;
+        rebuild();
+    });
+    // Fresh exchange rates arrived: redo the conversion row
+    connect(&m_rates, &CurrencyRates::ratesChanged, this, [this] {
+        if (m_current.isEmpty())
+            return;
+        m_current = instantResults(m_query.trimmed());
+        rebuild();
     });
 }
 
@@ -204,11 +214,16 @@ void SearchEngine::search()
 {
     ++m_generation;
     m_fileDebounce.stop();
+    m_contentSearch.cancel();
+    m_files.clear();
+    m_contents.clear();
+    m_web.clear();
+    m_searchContents = false;
     const QString q = fold(m_query.trimmed());
     m_current.clear();
 
     if (!q.isEmpty()) {
-        m_current << calculator(m_query.trimmed()) << apps(q) << settings(q);
+        m_current = instantResults(m_query.trimmed());
 
         SearchResult web;
         web.kind = SearchResult::Web;
@@ -216,12 +231,39 @@ void SearchEngine::search()
         web.icon = QStringLiteral("internet-web-browser");
         web.category = tr("Web");
         web.payload = m_query.trimmed();
-        m_current << web;
+        m_web << web;
 
+        // A calculation or conversion is the answer: don't grep the disk for "10 km em milhas"
+        const bool answered = !m_current.isEmpty()
+            && (m_current.first().kind == SearchResult::Calculator || m_current.first().kind == SearchResult::Conversion
+                || m_current.first().kind == SearchResult::Info);
+        m_searchContents = !answered && q.size() >= MinContentQuery;
         if (q.size() >= 2)
             m_fileDebounce.start();
     }
-    m_model.setResults(m_current);
+    rebuild();
+}
+
+QList<SearchResult> SearchEngine::instantResults(const QString &text)
+{
+    const QString q = fold(text);
+    if (q.isEmpty())
+        return {};
+    return calculator(text) + conversions(text) + apps(q) + settings(q);
+}
+
+void SearchEngine::rebuild()
+{
+    QList<SearchResult> all = m_current + m_files;
+    // A file already listed by name isn't repeated under its contents
+    for (const SearchResult &r : std::as_const(m_contents)) {
+        const bool listed = std::any_of(m_files.cbegin(), m_files.cend(),
+                                        [&r](const SearchResult &f) { return f.payload == r.payload; });
+        if (!listed)
+            all << r;
+    }
+    all << m_web;  // "Search the web" stays last
+    m_model.setResults(all);
 }
 
 void SearchEngine::startFileSearch(const QString &query, quint64 generation)
@@ -255,6 +297,49 @@ QList<SearchResult> SearchEngine::calculator(const QString &q) const
     r.category = tr("Calculator");
     r.payload = r.title;
     r.score = 1000;
+    return {r};
+}
+
+QList<SearchResult> SearchEngine::conversions(const QString &q)
+{
+    // Every conversion starts with an amount (maybe after a currency sign or "quanto é")
+    static const QRegularExpression hasDigit(QStringLiteral("\\d"));
+    if (!hasDigit.match(q).hasMatch())
+        return {};
+
+    SearchResult r;
+    r.icon = QStringLiteral("accessories-calculator");
+    r.score = 1000;
+
+    if (const auto unit = Converter::convertUnits(q)) {
+        r.kind = SearchResult::Conversion;
+        r.title = QStringLiteral("%1 %2").arg(Converter::formatNumber(unit->value), unit->toSymbol);
+        r.subtitle = tr("%1 %2 = %3 — press Enter to copy")
+                         .arg(Converter::formatNumber(unit->amount), unit->fromSymbol, r.title);
+        r.category = tr("Conversion");
+        r.payload = Converter::formatNumber(unit->value, QLocale(), false);
+        return {r};
+    }
+
+    const auto money = Converter::parseCurrency(q, m_rates.rates().keys());
+    if (!money)
+        return {};
+    m_rates.refreshIfStale();
+    r.category = tr("Currency");
+    const auto value = Converter::convertCurrency(money->amount, money->from, money->to, m_rates.rates());
+    if (!value) {
+        r.kind = SearchResult::Info;
+        r.title = m_rates.isLoading() ? tr("Fetching exchange rates…") : tr("Exchange rates unavailable");
+        r.subtitle = m_rates.isLoading() ? tr("%1 %2 to %3").arg(Converter::formatMoney(money->amount), money->from, money->to)
+                                         : tr("Connect to the internet once to download them");
+        return {r};
+    }
+    r.kind = SearchResult::Conversion;
+    r.title = QStringLiteral("%1 %2").arg(Converter::formatMoney(*value), money->to);
+    r.subtitle = tr("%1 %2 = %3 · rates from %4 — press Enter to copy")
+                     .arg(Converter::formatMoney(money->amount), money->from, r.title,
+                          QLocale().toString(m_rates.updated().date(), QLocale::ShortFormat));
+    r.payload = Converter::formatMoney(*value, QLocale(), false);
     return {r};
 }
 
@@ -333,7 +418,14 @@ bool SearchEngine::activate(int row)
         break;
     }
     case SearchResult::Calculator:
+    case SearchResult::Conversion:
         QGuiApplication::clipboard()->setText(r->payload);
+        break;
+    case SearchResult::Info:
+        return false;
+    case SearchResult::Content:
+        if (!QProcess::startDetached(QStringLiteral("xdg-open"), {r->payload}))
+            QDesktopServices::openUrl(QUrl::fromLocalFile(r->payload));
         break;
     case SearchResult::Setting:
         QProcess::startDetached(QStringLiteral("lingmo-settings"), {QStringLiteral("-m"), r->payload});

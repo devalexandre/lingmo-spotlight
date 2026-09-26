@@ -10,7 +10,7 @@ find_package(ECM REQUIRED NO_MODULE)
 list(APPEND CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 include(GNUInstallDirs)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Concurrent LinguistTools)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Concurrent Network LinguistTools)
 find_package(KF6Service REQUIRED)
 find_package(KF6KIO REQUIRED)
 find_package(KF6WindowSystem REQUIRED)
@@ -20,13 +20,25 @@ add_executable(lingmo-spotlight
     src/spotlight.cpp
     src/resultsmodel.cpp
     src/searchengine.cpp
+    src/converter.cpp
+    src/currencyrates.cpp
+    src/contentsearch.cpp
     qml.qrc
 )
 
 target_link_libraries(lingmo-spotlight PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::DBus Qt6::Concurrent
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::DBus Qt6::Concurrent Qt6::Network
     KF6::Service KF6::KIOGui KF6::WindowSystem
 )
+
+# Conversion parser self-check: cmake -DBUILD_TESTING=ON, then ctest
+option(BUILD_TESTING "Build the self-check programs" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(convertertest tests/convertertest.cpp src/converter.cpp)
+    target_link_libraries(convertertest PRIVATE Qt6::Core)
+    add_test(NAME converter COMMAND convertertest)
+endif()
 
 set(TRANSLATIONS_DIR ${CMAKE_INSTALL_FULL_DATADIR}/lingmo-spotlight/translations)
 target_compile_definitions(lingmo-spotlight PRIVATE TRANSLATIONS_DIR="${TRANSLATIONS_DIR}")

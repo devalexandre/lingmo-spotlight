@@ -24,7 +24,7 @@
 #include <QString>
 
 struct SearchResult {
-    enum Kind { App, Calculator, Setting, File, Web };
+    enum Kind { App, Calculator, Setting, File, Web, Conversion, Content, Info };
 
     Kind kind;
     QString title;
