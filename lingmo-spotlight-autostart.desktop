@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Spotlight
+Comment=Search apps, files and settings (Meta+Space)
+Exec=lingmo-spotlight --background
+Icon=system-search
+OnlyShowIn=Lingmo;
+NoDisplay=true
